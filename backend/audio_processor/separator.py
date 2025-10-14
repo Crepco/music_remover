@@ -8,7 +8,7 @@ from .filters import VocalRemovalFilter, HarmonicPercussiveFilter
 from .utils import normalize_audio
 
 
-class AudioSeparator:
+class AudioSeparator:     
     def __init__(self):
         self.vocal_removal_filter = VocalRemovalFilter()
         self.hp_filter = HarmonicPercussiveFilter()
