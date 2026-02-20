@@ -1,0 +1,24 @@
+{
+  "name": "music-separator",
+  "version": "1.0.0",
+  "description": "Music Separator - Remove vocals and isolate instruments from audio files",
+  "scripts": {
+    "start": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "backend": "cd backend && python -m uvicorn app:app --reload --host 0.0.0.0 --port 5000",
+    "frontend": "cd frontend && python -m http.server 8000",
+    "install-deps": "cd backend && pip install -r requirements.txt",
+    "dev": "npm run start"
+  },
+  "keywords": [
+    "audio",
+    "music",
+    "vocal-removal",
+    "audio-processing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+

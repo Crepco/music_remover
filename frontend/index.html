@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Remover</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">🎤</div>
+            <h1>Music Remover</h1>
+            <p class="subtitle">Upload a song — get back the vocals only</p>
+        </header>
+
+        <main>
+
+            <!-- Step 1: Upload -->
+            <div class="card" id="uploadCard">
+                <div class="upload-area" id="uploadArea">
+                    <input type="file" id="fileInput" accept="audio/*" hidden>
+                    <div class="upload-icon">📂</div>
+                    <p class="upload-label">Drop your audio file here</p>
+                    <p class="upload-hint">or click to browse</p>
+                    <p class="upload-formats">MP3 · WAV · FLAC · OGG · M4A · AAC &nbsp;·&nbsp; Max 100 MB</p>
+                </div>
+
+                <div class="file-preview" id="filePreview" style="display:none;">
+                    <span class="file-emoji">🎵</span>
+                    <div class="file-meta">
+                        <p class="file-name" id="fileName"></p>
+                        <p class="file-size" id="fileSize"></p>
+                    </div>
+                    <button class="btn-icon" id="removeFile" title="Remove file">✕</button>
+                </div>
+
+                <button class="btn-primary" id="processBtn" style="display:none;">
+                    Remove Music
+                </button>
+            </div>
+
+            <!-- Step 2: Progress -->
+            <div class="card card-center" id="progressCard" style="display:none;">
+                <div class="spinner"></div>
+                <h2>Removing music…</h2>
+                <div class="progress-track">
+                    <div class="progress-fill" id="progressBar"></div>
+                </div>
+                <p class="progress-pct" id="progressText">0%</p>
+            </div>
+
+            <!-- Step 3: Done -->
+            <div class="card card-center" id="doneCard" style="display:none;">
+                <div class="done-icon">✅</div>
+                <h2>Done!</h2>
+                <p class="done-sub">Your vocals are ready to download.</p>
+                <button class="btn-primary" id="downloadBtn">⬇ Download Vocals</button>
+                <button class="btn-ghost" id="anotherBtn">Process another file</button>
+            </div>
+
+            <!-- Error -->
+            <div class="card card-center card-error" id="errorCard" style="display:none;">
+                <div class="done-icon">❌</div>
+                <h2>Something went wrong</h2>
+                <p class="done-sub" id="errorText"></p>
+                <button class="btn-ghost" id="tryAgainBtn">Try again</button>
+            </div>
+
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

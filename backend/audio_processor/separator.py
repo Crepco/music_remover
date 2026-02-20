@@ -1,155 +1,122 @@
-import librosa
-import numpy as np
-import soundfile as sf
-from scipy import signal
 import os
 import tempfile
-from .filters import VocalRemovalFilter, HarmonicPercussiveFilter
-from .utils import normalize_audio
+import numpy as np
+import torch
+import librosa
+import soundfile as sf
+
+# Set backend BEFORE importing torchaudio
+os.environ['TORCHAUDIO_USE_BACKEND'] = 'soundfile'
+
+# Now import demucs (which will import torchaudio)
+from demucs.pretrained import get_model
+from demucs.apply import apply_model
 
 
-class AudioSeparator:     
+class AudioSeparator:
     def __init__(self):
-        self.vocal_removal_filter = VocalRemovalFilter()
-        self.hp_filter = HarmonicPercussiveFilter()
-
-    def process(self, input_path, method='vocal_removal', quality='medium', progress_callback=None):
+        """Initialize Demucs model"""
+        self.model = None
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    def _load_model(self):
+        """Lazy load the model (only when needed)"""
+        if self.model is None:
+            self.model = get_model('htdemucs')
+            self.model.to(self.device)
+            self.model.eval()
+    
+    def process(self, input_path, progress_callback=None):
         """
-        Process the input audio file and separate components based on the selected method.
+        Remove background music and return isolated vocals using Demucs.
 
         Args:
-            input_path (str): Path to the input audio file.
-            method (str): Separation method to use ('vocal_removal', 'instrumental_isolation', 'harmonic_percussive').
-            quality (str): Quality setting ('low', 'medium', 'high').
-            progress_callback (callable): Function to call with progress updates.
+            input_path (str): Path to input audio file.
+            progress_callback (callable): Called with float 0.0-1.0 for progress.
 
         Returns:
-            str: Path to the output file.
+            str: Path to the output vocals WAV file.
         """
-        # default callback does nothing
         if progress_callback is None:
             progress_callback = lambda x: None
 
-        progress_callback(0.1)
-
-        # Load audio
+        progress_callback(0.05)
+        
+        # Load audio with librosa (handles all formats, avoids torchcodec)
         y, sr = librosa.load(input_path, sr=None, mono=False)
-        progress_callback(0.2)
-
-        # Ensure stereo shape
+        progress_callback(0.15)
+        
+        # Ensure stereo: librosa returns (samples,) for mono or (channels, samples) for stereo
         if y.ndim == 1:
-            y = np.array([y, y])  # Convert mono to stereo
-        elif y.shape[0] > 2:
-            y = y[:2]  # Take first two channels if more than stereo
-        progress_callback(0.3)
-
-        params = self._get_quality_params(quality)
-
-        if method == 'vocal_removal':
-            processed_audio = self._vocal_removal(y, sr, params, progress_callback)
-        elif method == 'instrumental_isolation':
-            processed_audio = self._instrumental_isolation(y, sr, params, progress_callback)
-        elif method == 'harmonic_percussive':
-            processed_audio = self._harmonic_percussive_separation(y, sr, params, progress_callback)
-        else:
-            raise ValueError(f"Unknown method: {method}")
-
+            y = np.vstack([y, y])  # Mono to stereo: (samples,) -> (2, samples)
+        elif y.ndim == 2:
+            if y.shape[0] > 2:
+                y = y[:2]  # Take first 2 channels
+            elif y.shape[0] == 1:
+                y = np.vstack([y[0], y[0]])  # Mono to stereo
+        
+        # Convert to torch tensor: shape should be (channels, samples)
+        # Then add batch dimension: (batch, channels, samples)
+        wav = torch.from_numpy(y).float()  # (channels, samples)
+        wav = wav.unsqueeze(0)  # Add batch: (1, channels, samples)
+        
+        progress_callback(0.25)
+        
+        # Load model
+        self._load_model()
+        progress_callback(0.35)
+        
+        # Move to device
+        wav = wav.to(self.device)
+        
+        # Apply model
+        # Returns tensor of shape (batch, sources, channels, samples)
+        # Sources: [drums, bass, other, vocals] = 4 sources
+        progress_callback(0.4)
+        with torch.no_grad():
+            sources = apply_model(
+                self.model, 
+                wav, 
+                shifts=1, 
+                split=True, 
+                overlap=0.25, 
+                progress=False  # Disable progress to avoid issues
+            )
+        
         progress_callback(0.9)
-
-        # Save output
-        output_file = self._save_output(processed_audio, sr, input_path)
-
+        
+        # sources shape: (batch=1, sources=4, channels=2, samples)
+        # Extract vocals (last source, index 3)
+        vocals = sources[0, 3].cpu().numpy()  # (channels, samples)
+        
+        # Convert to format soundfile expects: (samples, channels)
+        if vocals.ndim == 2 and vocals.shape[0] == 2:
+            # Stereo: (2, samples) -> (samples, 2)
+            vocals_out = vocals.T
+        elif vocals.ndim == 1:
+            # Mono: (samples,)
+            vocals_out = vocals
+        else:
+            # Fallback: take first channel
+            vocals_out = vocals[0] if vocals.ndim > 1 else vocals
+        
+        progress_callback(0.95)
+        
+        # Save to temporary file
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        tmp.close()
+        sf.write(tmp.name, vocals_out, sr, format='WAV')
+        
         progress_callback(1.0)
+        return tmp.name
 
-        return output_file
 
-    def _get_quality_params(self, quality):
-        """Get processing parameters based on quality setting"""
-        if quality == 'low':
-            return {'n_fft': 1024, 'hop_length': 512, 'win_length': 1024}
-        elif quality == 'medium':
-            return {'n_fft': 2048, 'hop_length': 512, 'win_length': 2048}
-        else:  # high
-            return {'n_fft': 4096, 'hop_length': 1024, 'win_length': 4096}
+# Global instance (lazy loaded)
+_separator_instance = None
 
-    def _vocal_removal(self, y, sr, params, progress_callback):
-        """Remove vocals using center channel extraction and frequency filtering"""
-        left, right = y[0], y[1]
-
-        progress_callback(0.4)
-
-        # Center channel extraction
-        vocal_removed = left - right
-
-        progress_callback(0.6)
-
-        # Enhanced vocal removal with spectral processing
-        stft_left = librosa.stft(left, n_fft=params['n_fft'], hop_length=params['hop_length'])
-        stft_right = librosa.stft(right, n_fft=params['n_fft'], hop_length=params['hop_length'])
-
-        mag_left = np.abs(stft_left)
-        mag_right = np.abs(stft_right)
-        phase_left = np.angle(stft_left)
-
-        progress_callback(0.7)
-
-        similarity = np.minimum(mag_left, mag_right) / (np.maximum(mag_left, mag_right) + 1e-10)
-        vocal_mask = similarity > 0.8
-
-        mag_processed = mag_left.copy()
-        mag_processed[vocal_mask] *= 0.1
-
-        stft_processed = mag_processed * np.exp(1j * phase_left)
-        enhanced_removal = librosa.istft(stft_processed, hop_length=params['hop_length'])
-
-        progress_callback(0.8)
-
-        vocal_removed_normalized = normalize_audio(vocal_removed)
-        enhanced_normalized = normalize_audio(enhanced_removal)
-
-        result = 0.3 * vocal_removed_normalized + 0.7 * enhanced_normalized
-
-        # Apply additional filtering to suppress vocal frequencies
-        result = self.vocal_removal_filter.apply_vocal_suppression_filter(result, sr)
-
-        return normalize_audio(result)
-
-    def _instrumental_isolation(self, y, sr, params, progress_callback):
-        """Isolate instrumental parts by enhancing them and reducing vocals"""
-        left, right = y[0], y[1]
-        progress_callback(0.4)
-
-        stereo_enhancement = (left + right) * 0.7 + (left - right) * 0.3
-
-        progress_callback(0.6)
-
-        harmonic, percussive = librosa.effects.hpss(stereo_enhancement, margin=(1.0, 5.0))
-        progress_callback(0.8)
-
-        result = 0.8 * harmonic + 0.2 * percussive
-        return normalize_audio(result)
-
-    def _harmonic_percussive_separation(self, y, sr, params, progress_callback):
-        """Separate harmonic and percussive components"""
-        mono = np.mean(y, axis=0)
-        progress_callback(0.4)
-
-        harmonic, percussive = librosa.effects.hpss(mono, margin=(1.0, 5.0), kernel_size=(17, 17))
-        progress_callback(0.7)
-
-        result = harmonic
-        progress_callback(0.8)
-
-        return normalize_audio(result)
-
-    def _save_output(self, audio, sr, original_file):
-        """Save processed audio to temporary file"""
-        _, ext = os.path.splitext(original_file)
-        if ext.lower() not in ['.wav', '.flac']:
-            ext = '.wav'
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
-            output_path = tmp_file.name
-
-        sf.write(output_path, audio, sr, format='WAV' if ext == '.wav' else 'FLAC')
-        return output_path
+def get_separator():
+    """Get or create separator instance"""
+    global _separator_instance
+    if _separator_instance is None:
+        _separator_instance = AudioSeparator()
+    return _separator_instance
